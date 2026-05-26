@@ -294,6 +294,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    # Hindsight session hook — recall Faro domain + per-user memories.
+    # Best-effort: silent no-op when HINDSIGHT_URL is unset or recall fails.
+    try:
+        from agent.hindsight_session_hook import build_hindsight_prompt_fragment
+
+        _user_id = getattr(agent, "_user_id", None) or ""
+        _hindsight_block = build_hindsight_prompt_fragment(
+            user_message=system_message or "",
+            user_id=_user_id,
+        )
+        if _hindsight_block:
+            volatile_parts.append(_hindsight_block)
+    except Exception:
+        pass
+
     from hermes_time import now as _hermes_now
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable
