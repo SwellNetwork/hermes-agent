@@ -940,6 +940,21 @@ def _run_cleanup():
         _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
     except Exception:
         pass
+    # Hindsight session-finalize hook — emit full transcript to faro-memory-service.
+    try:
+        from agent.hindsight_session_hook import emit_session_end
+
+        _sid = _active_agent_ref.session_id if _active_agent_ref else None
+        _uid = getattr(_active_agent_ref, "_user_id", None) if _active_agent_ref else None
+        _msgs = getattr(_active_agent_ref, "_session_messages", None)
+        if _sid:
+            emit_session_end(
+                session_id=_sid,
+                user_id=_uid,
+                transcript=list(_msgs) if isinstance(_msgs, list) else None,
+            )
+    except Exception:
+        pass
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
             # Forward the agent's own transcript so memory providers'

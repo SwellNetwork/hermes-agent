@@ -4299,6 +4299,24 @@ def run_conversation(
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
 
+    # Hindsight session-end hook — fire-and-forget transcript emission.
+    # Runs on a daemon thread so it never blocks the caller.
+    try:
+        from agent.hindsight_session_hook import emit_session_end
+
+        _uid = getattr(agent, "_user_id", None)
+        _msgs = list(messages) if messages else None
+        emit_session_end(
+            session_id=agent.session_id,
+            user_id=_uid,
+            transcript=_msgs,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Hindsight session-end hook failed (session=%s): %s",
+            agent.session_id, exc,
+        )
+
     return result
 
 
