@@ -141,15 +141,23 @@ def recall_memories_for_prompt(
 
     async def _recall():
         nonlocal domain_mems, user_mems
-        try:
-            domain_mems, user_mems = await asyncio.gather(
-                client.recall(query=query, bank_id="faro", top_k=10),
-                client.recall(
-                    query=query, bank_id=f"user-{uid}", top_k=10
-                ),
-            )
-        except Exception as exc:
-            logger.warning("Hindsight recall failed: %s", exc)
+        results = await asyncio.gather(
+            client.recall(query=query, bank_id="faro", top_k=10),
+            client.recall(
+                query=query, bank_id=f"user-{uid}", top_k=10
+            ),
+            return_exceptions=True,
+        )
+        # Unpack results, treating exceptions as empty lists.
+        _domain, _user = results
+        if isinstance(_domain, list):
+            domain_mems = _domain
+        elif isinstance(_domain, Exception):
+            logger.warning("Hindsight recall (faro bank) failed: %s", _domain)
+        if isinstance(_user, list):
+            user_mems = _user
+        elif isinstance(_user, Exception):
+            logger.warning("Hindsight recall (user bank) failed: %s", _user)
 
     try:
         # Use the shared Hindsight event loop if available; otherwise create one.
