@@ -4,17 +4,6 @@ FROM debian:13.4
 # Disable Python stdout buffering to ensure logs are printed immediately
 ENV PYTHONUNBUFFERED=1
 
-# Hindsight session-hook configuration (Faro integration).
-# HINDSIGHT_URL — Hindsight API endpoint (K8s ClusterIP, e.g. http://hindsight:8080).
-#   When set, the session-start hook recalls from faro and user-{id} banks
-#   and injects memories into the system prompt.  Leave unset to disable.
-# FARO_MEMORY_SERVICE_URL — Memory extraction service endpoint for session-end
-#   retention (fire-and-forget POST).  Leave unset to disable.
-# These are deliberately empty defaults — actual values are injected by the
-# K8s Deployment template at deploy time.
-ENV HINDSIGHT_URL=""
-ENV FARO_MEMORY_SERVICE_URL=""
-
 # Store Playwright browsers outside the volume mount so the build-time
 # install survives the /opt/data volume overlay at runtime.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright

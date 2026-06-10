@@ -940,7 +940,7 @@ def _run_cleanup():
         _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
     except Exception:
         pass
-    # Hindsight session-finalize hook — emit full transcript to faro-memory-service.
+    # SQLite-native memory session-finalize hook — no-op compatibility shim.
     try:
         from agent.hindsight_session_hook import emit_session_end
 
