@@ -294,8 +294,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
-    # Hindsight session hook — recall Faro domain + per-user memories.
-    # Best-effort: silent no-op when HINDSIGHT_URL is unset or recall fails.
+    # SQLite-native memory hook — read MEMORY.md + USER.md from VM disk.
+    # Best-effort: silent no-op when files are absent or unreadable.
     try:
         from agent.hindsight_session_hook import build_hindsight_prompt_fragment
 

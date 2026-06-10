@@ -1,390 +1,298 @@
-"""Unit tests for agent/hindsight_session_hook.py — Faro memory integration."""
+"""Unit tests for agent/hindsight_session_hook.py — SQLite-native memory hook.
+
+Covers the file-read based implementation that replaced the external Hindsight
+API integration. No network calls are made; all tests use temp files on disk.
+"""
+
+from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from typing import List
 
 import pytest
 
 
 # ---------------------------------------------------------------------------
-# Module reload helper — ensures env vars are re-read in each test.
+# Helpers
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(autouse=True)
-def _clear_env_and_reload():
-    """Reset env vars and reload the module before each test."""
-    for key in ("HINDSIGHT_URL", "FARO_MEMORY_SERVICE_URL"):
-        os.environ.pop(key, None)
+def _write_memory_file(path: Path, entries: List[str]) -> None:
+    """Write a Hermes-format memory file with entries delimited by \\n§\\n."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n§\n".join(entries), encoding="utf-8")
 
-    # Clear the module cache so it reloads fresh.
-    import agent.hindsight_session_hook as mod
-    mod._client = None
-    mod._ENABLED = False
-    mod._HINDSIGHT_URL = ""
-    mod._FARO_MEMORY_SERVICE_URL = ""
-    mod._resolve_env()
-    yield
+
+# ---------------------------------------------------------------------------
+# _read_memory_file()
+# ---------------------------------------------------------------------------
+
+def test_read_memory_file_missing_returns_empty(tmp_path):
+    from agent.hindsight_session_hook import _read_memory_file
+
+    result = _read_memory_file(tmp_path / "MISSING.md")
+    assert result == []
+
+
+def test_read_memory_file_empty_file_returns_empty(tmp_path):
+    from agent.hindsight_session_hook import _read_memory_file
+
+    p = tmp_path / "MEMORY.md"
+    p.write_text("", encoding="utf-8")
+    assert _read_memory_file(p) == []
+
+
+def test_read_memory_file_whitespace_only_returns_empty(tmp_path):
+    from agent.hindsight_session_hook import _read_memory_file
+
+    p = tmp_path / "MEMORY.md"
+    p.write_text("   \n  \n", encoding="utf-8")
+    assert _read_memory_file(p) == []
+
+
+def test_read_memory_file_single_entry(tmp_path):
+    from agent.hindsight_session_hook import _read_memory_file
+
+    p = tmp_path / "MEMORY.md"
+    _write_memory_file(p, ["User prefers concise responses."])
+    result = _read_memory_file(p)
+    assert result == ["User prefers concise responses."]
+
+
+def test_read_memory_file_multiple_entries(tmp_path):
+    from agent.hindsight_session_hook import _read_memory_file
+
+    entries = ["First memory.", "Second memory.", "Third memory."]
+    p = tmp_path / "MEMORY.md"
+    _write_memory_file(p, entries)
+    result = _read_memory_file(p)
+    assert result == entries
+
+
+def test_read_memory_file_strips_whitespace_from_entries(tmp_path):
+    from agent.hindsight_session_hook import _read_memory_file
+
+    p = tmp_path / "MEMORY.md"
+    p.write_text("  entry one  \n§\n  entry two  ", encoding="utf-8")
+    result = _read_memory_file(p)
+    assert result == ["entry one", "entry two"]
+
+
+# ---------------------------------------------------------------------------
+# _format_entries()
+# ---------------------------------------------------------------------------
+
+def test_format_entries_empty():
+    from agent.hindsight_session_hook import _format_entries
+
+    assert _format_entries([]) == ""
+
+
+def test_format_entries_single():
+    from agent.hindsight_session_hook import _format_entries
+
+    assert _format_entries(["one"]) == "- one"
+
+
+def test_format_entries_multiple():
+    from agent.hindsight_session_hook import _format_entries
+
+    result = _format_entries(["first", "second", "third"])
+    assert result == "- first\n- second\n- third"
 
 
 # ---------------------------------------------------------------------------
 # recall_memories_for_prompt()
 # ---------------------------------------------------------------------------
 
-def test_recall_disabled_when_no_hindsight_url():
-    """recall_memories_for_prompt returns empty string when HINDSIGHT_URL is unset."""
+def test_recall_returns_empty_when_no_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from agent.hindsight_session_hook import recall_memories_for_prompt
 
-    result = recall_memories_for_prompt(user_message="hello", user_id="u1")
+    result = recall_memories_for_prompt()
     assert result == ""
 
 
-def test_recall_disabled_when_client_import_fails():
-    """recall_memories_for_prompt returns empty string when hindsight_client is missing."""
-    os.environ["HINDSIGHT_URL"] = "http://hindsight:8080"
+def test_recall_returns_platform_context_from_memory_md(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    memories_dir = tmp_path / "memories"
+    _write_memory_file(memories_dir / "MEMORY.md", ["Faro is a trading platform."])
 
-    from agent.hindsight_session_hook import recall_memories_for_prompt, _resolve_env
+    from agent.hindsight_session_hook import recall_memories_for_prompt
 
-    _resolve_env()
-
-    with patch(
-        "agent.hindsight_session_hook._get_hindsight_client", return_value=None
-    ):
-        result = recall_memories_for_prompt(user_message="hello", user_id="u1")
-        assert result == ""
+    result = recall_memories_for_prompt()
+    assert "## Platform Context" in result
+    assert "Faro is a trading platform." in result
+    assert "- Faro is a trading platform." in result
 
 
-def test_recall_returns_formatted_memories():
-    """recall_memories_for_prompt formats memories from both banks correctly."""
-    os.environ["HINDSIGHT_URL"] = "http://hindsight:8080"
+def test_recall_returns_user_context_from_user_md(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    memories_dir = tmp_path / "memories"
+    _write_memory_file(memories_dir / "USER.md", ["User prefers bullet lists."])
 
-    from agent.hindsight_session_hook import (
-        recall_memories_for_prompt,
-        _resolve_env,
-        _get_hindsight_client,
-    )
+    from agent.hindsight_session_hook import recall_memories_for_prompt
 
-    _resolve_env()
-
-    # Create a mock client whose recall() returns pre-built Memory objects.
-    fake_mem1 = MagicMock()
-    fake_mem1.content = "Faro is a trading platform."
-    fake_mem2 = MagicMock()
-    fake_mem2.content = "User prefers concise responses."
-
-    mock_client = MagicMock()
-
-    async def _fake_recall(query, bank_id, top_k):
-        if bank_id == "faro":
-            return [fake_mem1]
-        elif bank_id.startswith("user-"):
-            return [fake_mem2]
-        return []
-
-    mock_client.recall = _fake_recall
-
-    with patch.object(
-        __import__("agent.hindsight_session_hook", fromlist=["_get_hindsight_client"]),
-        "_get_hindsight_client",
-        return_value=mock_client,
-    ):
-        result = recall_memories_for_prompt(
-            user_message="What is Faro?", user_id="u1"
-        )
-
-    assert "Platform Context" in result
-    assert "Faro is a trading platform" in result
-    assert "User Context" in result
-    assert "User prefers concise responses" in result
+    result = recall_memories_for_prompt()
+    assert "## User Context" in result
+    assert "User prefers bullet lists." in result
+    assert "Platform Context" not in result
 
 
-def test_recall_handles_partial_failure():
-    """When only one bank succeeds, the other is omitted gracefully."""
-    os.environ["HINDSIGHT_URL"] = "http://hindsight:8080"
+def test_recall_returns_both_sections_when_both_files_present(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    memories_dir = tmp_path / "memories"
+    _write_memory_file(memories_dir / "MEMORY.md", ["Domain fact."])
+    _write_memory_file(memories_dir / "USER.md", ["User preference."])
 
-    from agent.hindsight_session_hook import (
-        recall_memories_for_prompt,
-        _resolve_env,
-    )
+    from agent.hindsight_session_hook import recall_memories_for_prompt
 
-    _resolve_env()
-
-    fake_mem = MagicMock()
-    fake_mem.content = "Faro platform info."
-
-    mock_client = MagicMock()
-
-    async def _fake_recall(query, bank_id, top_k):
-        if bank_id == "faro":
-            return [fake_mem]
-        raise RuntimeError("user bank unavailable")
-
-    mock_client.recall = _fake_recall
-
-    with patch.object(
-        __import__("agent.hindsight_session_hook", fromlist=["_get_hindsight_client"]),
-        "_get_hindsight_client",
-        return_value=mock_client,
-    ):
-        result = recall_memories_for_prompt(
-            user_message="What is Faro?", user_id="u1"
-        )
-
-    # Should have domain context but no user context (the second recall failed).
-    assert "Platform Context" in result
-    assert "User Context" not in result
+    result = recall_memories_for_prompt()
+    assert "## Platform Context" in result
+    assert "Domain fact." in result
+    assert "## User Context" in result
+    assert "User preference." in result
 
 
-def test_recall_handles_both_banks_empty():
-    """When both banks return empty lists, the result is empty."""
-    os.environ["HINDSIGHT_URL"] = "http://hindsight:8080"
+def test_recall_multiple_memory_entries(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    memories_dir = tmp_path / "memories"
+    _write_memory_file(memories_dir / "MEMORY.md", ["Entry A.", "Entry B.", "Entry C."])
 
-    from agent.hindsight_session_hook import (
-        recall_memories_for_prompt,
-        _resolve_env,
-    )
+    from agent.hindsight_session_hook import recall_memories_for_prompt
 
-    _resolve_env()
+    result = recall_memories_for_prompt()
+    assert "- Entry A." in result
+    assert "- Entry B." in result
+    assert "- Entry C." in result
 
-    mock_client = MagicMock()
 
-    async def _fake_recall(query, bank_id, top_k):
-        return []
+def test_recall_accepts_user_message_and_user_id_without_error(tmp_path, monkeypatch):
+    """user_message and user_id params are accepted for API compatibility but ignored."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from agent.hindsight_session_hook import recall_memories_for_prompt
 
-    mock_client.recall = _fake_recall
-
-    with patch.object(
-        __import__("agent.hindsight_session_hook", fromlist=["_get_hindsight_client"]),
-        "_get_hindsight_client",
-        return_value=mock_client,
-    ):
-        result = recall_memories_for_prompt(
-            user_message="What is Faro?", user_id="u1"
-        )
-
+    # Should not raise regardless of what is passed
+    result = recall_memories_for_prompt(user_message="hello", user_id="u123")
     assert result == ""
 
 
-def test_recall_empty_user_message_and_id():
-    """recall works with empty/None user_message and user_id."""
-    os.environ["HINDSIGHT_URL"] = "http://hindsight:8080"
+def test_recall_empty_memory_file_skips_platform_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    memories_dir = tmp_path / "memories"
+    (memories_dir).mkdir(parents=True, exist_ok=True)
+    (memories_dir / "MEMORY.md").write_text("", encoding="utf-8")
+    _write_memory_file(memories_dir / "USER.md", ["User preference."])
 
-    from agent.hindsight_session_hook import (
-        recall_memories_for_prompt,
-        _resolve_env,
-    )
+    from agent.hindsight_session_hook import recall_memories_for_prompt
 
-    _resolve_env()
-
-    fake_mem = MagicMock()
-    fake_mem.content = "general info"
-
-    mock_client = MagicMock()
-
-    async def _fake_recall(query, bank_id, top_k):
-        return [fake_mem]
-
-    mock_client.recall = _fake_recall
-
-    with patch.object(
-        __import__("agent.hindsight_session_hook", fromlist=["_get_hindsight_client"]),
-        "_get_hindsight_client",
-        return_value=mock_client,
-    ):
-        result = recall_memories_for_prompt(user_message=None, user_id=None)
-
-    # Even with empty query, both banks should be queried.
-    assert "general info" in result
+    result = recall_memories_for_prompt()
+    assert "Platform Context" not in result
+    assert "## User Context" in result
 
 
 # ---------------------------------------------------------------------------
-# _format_memories()
+# emit_session_end() — no-op shim
 # ---------------------------------------------------------------------------
 
-def test_format_memories_empty():
-    from agent.hindsight_session_hook import _format_memories
-
-    assert _format_memories([]) == "_No relevant memories found._"
-
-
-def test_format_memories_single():
-    from agent.hindsight_session_hook import _format_memories
-
-    m = MagicMock()
-    m.content = "single memory"
-    assert _format_memories([m]) == "- single memory"
-
-
-def test_format_memories_multiple():
-    from agent.hindsight_session_hook import _format_memories
-
-    m1 = MagicMock()
-    m1.content = "first"
-    m2 = MagicMock()
-    m2.content = "second"
-    assert _format_memories([m1, m2]) == "- first\n- second"
-
-
-def test_format_memories_fallback_to_str():
-    """When content attr is missing, fall back to repr."""
-    from agent.hindsight_session_hook import _format_memories
-
-    result = _format_memories(["raw string"])
-    assert "- raw string" in result
-
-
-# ---------------------------------------------------------------------------
-# emit_session_end()
-# ---------------------------------------------------------------------------
-
-def test_emit_session_end_skips_when_url_unset():
-    """emit_session_end does nothing when FARO_MEMORY_SERVICE_URL is empty."""
+def test_emit_session_end_is_noop_no_raise():
+    """emit_session_end must not raise regardless of args."""
     from agent.hindsight_session_hook import emit_session_end
 
-    # Should not raise
     emit_session_end(session_id="s1", user_id="u1", transcript=[])
 
 
-def test_emit_session_end_posts_to_endpoint():
-    """emit_session_end POSTs the transcript to faro-memory-service."""
-    os.environ["FARO_MEMORY_SERVICE_URL"] = "http://faro-memory:8080"
+def test_emit_session_end_accepts_none_args():
+    from agent.hindsight_session_hook import emit_session_end
 
-    from agent.hindsight_session_hook import emit_session_end, _resolve_env
+    emit_session_end(session_id="s2", user_id=None, transcript=None)
 
-    _resolve_env()
+
+def test_emit_session_end_accepts_no_optional_args():
+    from agent.hindsight_session_hook import emit_session_end
+
+    emit_session_end(session_id="s3")
+
+
+def test_emit_session_end_accepts_transcript_list():
+    from agent.hindsight_session_hook import emit_session_end
 
     transcript = [
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi there"},
     ]
-
-    with patch("urllib.request.urlopen") as mock_urlopen:
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
-
-        emit_session_end(
-            session_id="sess-abc",
-            user_id="user-123",
-            transcript=transcript,
-        )
-
-        # Wait for the daemon thread to complete.
-        import time
-        time.sleep(0.1)
-
-        mock_urlopen.assert_called_once()
-
-        # Verify the request URL.
-        req = mock_urlopen.call_args[0][0]
-        assert req.full_url == "http://faro-memory:8080/extract"
-        assert req.method == "POST"
-        assert req.get_header("Content-type") == "application/json"
-
-
-def test_emit_session_end_survives_connection_error():
-    """emit_session_end does not raise when the HTTP call fails."""
-    os.environ["FARO_MEMORY_SERVICE_URL"] = "http://faro-memory:8080"
-
-    from agent.hindsight_session_hook import emit_session_end, _resolve_env
-
-    _resolve_env()
-
-    with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
-        # Should not raise — fire-and-forget
-        emit_session_end(
-            session_id="sess-abc",
-            user_id="user-123",
-            transcript=[],
-        )
-
-        import time
-        time.sleep(0.1)
-
-
-def test_emit_session_end_with_none_transcript():
-    """emit_session_end handles None transcript gracefully."""
-    os.environ["FARO_MEMORY_SERVICE_URL"] = "http://faro-memory:8080"
-
-    from agent.hindsight_session_hook import emit_session_end, _resolve_env
-
-    _resolve_env()
-
-    with patch("urllib.request.urlopen") as mock_urlopen:
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
-
-        emit_session_end(session_id="s1", user_id=None, transcript=None)
-
-        import time
-        time.sleep(0.1)
-
-        mock_urlopen.assert_called_once()
+    emit_session_end(session_id="s4", transcript=transcript)
 
 
 # ---------------------------------------------------------------------------
 # build_hindsight_prompt_fragment()
 # ---------------------------------------------------------------------------
 
-def test_build_prompt_fragment_disabled():
-    """build_hindsight_prompt_fragment returns '' when HINDSIGHT_URL is unset."""
+def test_build_prompt_fragment_returns_empty_when_no_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from agent.hindsight_session_hook import build_hindsight_prompt_fragment
 
-    result = build_hindsight_prompt_fragment(
-        user_message="hello", user_id="u1"
-    )
+    result = build_hindsight_prompt_fragment(user_message="hello", user_id="u1")
     assert result == ""
 
 
-def test_build_prompt_fragment_returns_block():
-    """build_hindsight_prompt_fragment forwards to recall_memories_for_prompt."""
-    os.environ["HINDSIGHT_URL"] = "http://hindsight:8080"
+def test_build_prompt_fragment_returns_content_when_files_present(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    memories_dir = tmp_path / "memories"
+    _write_memory_file(memories_dir / "MEMORY.md", ["Platform info."])
+
+    from agent.hindsight_session_hook import build_hindsight_prompt_fragment
+
+    result = build_hindsight_prompt_fragment(user_message="hello", user_id="u1")
+    assert "## Platform Context" in result
+    assert "Platform info." in result
+
+
+def test_build_prompt_fragment_delegates_to_recall(tmp_path, monkeypatch):
+    """build_hindsight_prompt_fragment must forward to recall_memories_for_prompt."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    memories_dir = tmp_path / "memories"
+    _write_memory_file(memories_dir / "MEMORY.md", ["Faro fact."])
+    _write_memory_file(memories_dir / "USER.md", ["User pref."])
 
     from agent.hindsight_session_hook import (
         build_hindsight_prompt_fragment,
-        _resolve_env,
+        recall_memories_for_prompt,
     )
 
-    _resolve_env()
-
-    with patch(
-        "agent.hindsight_session_hook.recall_memories_for_prompt",
-        return_value="## Platform Context\n- test",
-    ):
-        result = build_hindsight_prompt_fragment(
-            user_message="hello", user_id="u1"
-        )
-        assert result == "## Platform Context\n- test"
+    fragment = build_hindsight_prompt_fragment()
+    direct = recall_memories_for_prompt()
+    assert fragment == direct
 
 
 # ---------------------------------------------------------------------------
-# Integration: system_prompt.py injection (lightweight)
+# Integration: system_prompt.py injection (lightweight import checks)
 # ---------------------------------------------------------------------------
 
-def test_system_prompt_imports_hindsight_hook():
+def test_system_prompt_imports_hook_without_error():
     """system_prompt.py can import build_hindsight_prompt_fragment without error."""
-    # Verify the import works — the system_prompt module loads without
-    # crashing even when HINDSIGHT_URL is unset.
-    import agent.system_prompt
+    import agent.system_prompt  # noqa: F401 — import side-effect is the test
     from agent.hindsight_session_hook import build_hindsight_prompt_fragment
+
     assert callable(build_hindsight_prompt_fragment)
 
 
-def test_system_prompt_hindsight_block_not_injected_when_disabled():
-    """When HINDSIGHT_URL is unset, build_hindsight_prompt_fragment returns ''."""
-    from agent.hindsight_session_hook import build_hindsight_prompt_fragment
-
-    result = build_hindsight_prompt_fragment(
-        user_message="hello", user_id="u1"
-    )
-    assert result == ""
-
-
-def test_system_prompt_hindsight_injection_code_path_exists():
-    """Verify the injection code at line ~296 in system_prompt.py exists."""
+def test_system_prompt_hook_injection_code_path_exists():
+    """Verify the hook injection code path exists in system_prompt.py."""
     import agent.system_prompt as sp
     import inspect
 
     source = inspect.getsource(sp.build_system_prompt_parts)
     assert "build_hindsight_prompt_fragment" in source
     assert "_user_id" in source
+
+
+def test_hook_returns_empty_when_hermes_home_has_no_memories(tmp_path, monkeypatch):
+    """When HERMES_HOME/memories/ is empty, hook returns ''."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "memories").mkdir()
+
+    from agent.hindsight_session_hook import build_hindsight_prompt_fragment
+
+    result = build_hindsight_prompt_fragment()
+    assert result == ""

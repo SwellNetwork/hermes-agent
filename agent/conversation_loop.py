@@ -4299,8 +4299,8 @@ def run_conversation(
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
 
-    # Hindsight session-end hook — fire-and-forget transcript emission.
-    # Runs on a daemon thread so it never blocks the caller.
+    # SQLite-native memory session-end hook — no-op compatibility shim.
+    # Memory persistence is handled by the background_review above.
     try:
         from agent.hindsight_session_hook import emit_session_end
 
@@ -4313,7 +4313,7 @@ def run_conversation(
         )
     except Exception as exc:
         logger.warning(
-            "Hindsight session-end hook failed (session=%s): %s",
+            "session-end hook failed (session=%s): %s",
             agent.session_id, exc,
         )
 
